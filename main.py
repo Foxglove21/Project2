@@ -35,7 +35,7 @@ pem = private_key.private_bytes(
 )
 expired_pem = expired_key.private_bytes(
     encoding=serialization.Encoding.PEM,
-    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    format=serialization.PrivateFormat.PKCS8,
     encryption_algorithm=serialization.NoEncryption()
 )
 
@@ -70,19 +70,21 @@ def store_private_key(db_name, key, exp):
     print("Key Stored")
     connect.close()
 
-def get_private_key(db_name, exp):
+def get_private_key(db_name, exp=False):
     """Gets private keys"""
     connect = sqlite3.connect(db_name)
     cursor = connect.cursor()
+    curr_time = int(datetime.datetime.utcnow().timestamp())
     if exp:
-        cursor.execute("SELECT key FROM keys WHERE exp < ? LIMIT 1;", (int(datetime.datetime.utcnow().timestamp()),))
+        cursor.execute("SELECT key FROM keys WHERE exp < ? LIMIT 1;", (curr_time,))
     else:
-        cursor.execute("SELECT key FROM keys WHERE exp > ? LIMIT 1;", (int(datetime.datetime.utcnow().timestamp()),))
+        cursor.execute("SELECT key FROM keys WHERE exp > ? LIMIT 1;", (curr_time,))
     key_row = cursor.fetchone()
     connect.close()
     if key_row:
         return key_row[0]
-    return None
+    else:
+        return None
 
 def int_to_base64(value):
     """Convert an integer to a Base64URL-encoded string"""
@@ -106,7 +108,15 @@ def get_valid_keys(db_name):
     
 class MyServer(BaseHTTPRequestHandler):
     """creating a JWKS server via class"""
-
+    def __init__(self, *args, **kwargs):
+        fname = "totally_not_my_privateKeys.db"
+        create_open_db(fname)
+        expiration1 = int((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).timestamp())
+        store_private_key(fname, pem, expiration1)
+        expiration2 = int((datetime.datetime.utcnow() + datetime.timedelta(seconds=0)).timestamp())
+        store_private_key(fname, expired_pem, expiration2)
+        super().__init__(*args, **kwargs) 
+    
     #used chatgpt to find out what send_response means
     #used prompt "send_response meaning in python"
     def do_put(self):
@@ -133,12 +143,14 @@ class MyServer(BaseHTTPRequestHandler):
         self.end_headers()
         return
 
-    def do_post(self):
+    def do_POST(self):
         """Posts a path for the user"""
         #sets path
+        print("Recieved POST request")
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
         if parsed_path.path == "/auth":
+            print("Handling /auth request")
             headers = {
                 "kid": "goodKID"
             }
@@ -159,19 +171,21 @@ class MyServer(BaseHTTPRequestHandler):
                 "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
             }
             #checks if pamas aka parsed_path query is expired
-            if 'expired' in params:
+            if expired:
                 headers["kid"] = "expiredKID"
                 token_payload["exp"] = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
-            encoded_jwt = jwt.encode(token_payload, pkey, algorithm="RS256", headers=headers)
+            token = jwt.encode(token_payload, pkey, algorithm="RS256", headers=headers)
             self.send_response(200)
+            self.send_header("Content-type", "application/json")
             self.end_headers()
+            response_data = json.dumps({"token": token})
             #writes encoded jwt using utf-8 to a file
-            self.wfile.write(bytes(encoded_jwt, "utf-8"))
+            self.wfile.write(response_data.encode())
             return
         self.send_response(405)
         self.end_headers()
         return
-    
+
     def do_get(self):
         """gets response from client using json and keys"""
         if self.path == "/.well-known/jwks.json":
@@ -208,12 +222,6 @@ if __name__ == "__main__":
     #creates webserver
     webServer = HTTPServer((HOSTNAME, SERVERPORT), MyServer)
     try:
-        FNAME = "totally_not_my_privateKeys.db"
-        create_open_db(FNAME)
-        expiration1 = int((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).timestamp())
-        store_private_key(FNAME, pem, expiration1)
-        expiration2 = int((datetime.datetime.utcnow() + datetime.timedelta(seconds=0)).timestamp())
-        store_private_key(FNAME, expired_pem, expiration2)
         #webserver now has an infinite loop and can handle requests
         #used chatgpt to find out what serve_forever() means
         #used prompt "what does serve_forever() mean
