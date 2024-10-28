@@ -45,3 +45,5 @@ def test_delete_request():
 def test_patch_request():
     response = requests.patch(f'{BASE_URL}/auth')
     assert response.status_code == 405
+
+#used chatgpt to make this by inserting my code and asking it to create a test suite
